@@ -110,7 +110,10 @@
     <div class="grid3" id="bch-axis-b"></div>
     <div class="row2" style="grid-template-columns: 1fr 1fr;">
       <button type="button" id="bch-seq">순차 회전 애니메이션</button>
-      <button type="button" id="bch-bch4">BCH(4차) 애니메이션</button>
+      <button type="button" id="bch-bch1">BCH(1차) 애니메이션</button>
+    </div>
+    <div class="row2" style="grid-template-columns: 1fr;">
+      <button type="button" id="bch-bch3">BCH(3차) 애니메이션</button>
     </div>
     <div class="row2">
       <span>BCH 진행도</span>
@@ -149,7 +152,8 @@
     const bchAxisAGrid = document.getElementById("bch-axis-a");
     const bchAxisBGrid = document.getElementById("bch-axis-b");
     const bchSeqBtn = document.getElementById("bch-seq");
-    const bchBch4Btn = document.getElementById("bch-bch4");
+    const bchBch1Btn = document.getElementById("bch-bch1");
+    const bchBch3Btn = document.getElementById("bch-bch3");
     const bchT = document.getElementById("bch-t");
     const bchCopy = document.getElementById("bch-copy");
     const bchOut = document.getElementById("bch-out");
@@ -566,13 +570,18 @@
         return rodriguesExp(u, th);
       }
 
-      // BCH(4차) 지수: Z = A + B + 1/2[A,B] + 1/12[A,[A,B]] + 1/12[B,[B,A]] - 1/24[B,[A,[A,B]]]
-      const c1 = commMat(A, B); // [A,B]
-      const c2 = commMat(A, c1); // [A,[A,B]]
-      const c3 = commMat(B, commMat(B, A)); // [B,[B,A]]
-      const c4 = commMat(B, c2); // [B,[A,[A,B]]]
+      // BCH(1/4차) 지수:
+      // 우리가 비교하는 순차 곱은 Rseq = exp(B)exp(A)이므로,
+      // 여기서의 BCH는 Z = log(exp(B)exp(A)) 기준으로 둡니다.
+      // 즉 X=B, Y=A 에 대해:
+      // Z = X + Y + 1/2[X,Y] + 1/12[X,[X,Y]] + 1/12[Y,[Y,X]] - 1/24[Y,[X,[X,Y]]]
+      const Z1 = addMatrix3(B, A); // X+Y (B+A)
 
-      const Z1 = addMatrix3(A, B); // A+B
+      const c1 = commMat(B, A); // [B,A]
+      const c2 = commMat(B, c1); // [B,[B,A]]
+      const c3 = commMat(A, commMat(A, B)); // [A,[A,B]]
+      const c4 = commMat(A, c2); // [A,[B,[B,A]]]  (= [Y,[X,[X,Y]]])
+
       const Z2 = addMatrix3(Z1, scaleMat(c1, 1 / 2));
       const Z3 = addMatrix3(addMatrix3(Z2, scaleMat(c2, 1 / 12)), scaleMat(c3, 1 / 12));
       const Z4 = addMatrix3(Z3, scaleMat(c4, -1 / 24));
@@ -587,68 +596,99 @@
       const d3 = subMatrix3(Rseq, R3);
       const d4 = subMatrix3(Rseq, R4);
 
+      // Zk = [w_k]_x 형태이므로 w_k(축 방향 성분)와 theta_k(축각)를 바로 추출 가능
+      const eZ1 = Z1.elements;
+      const w1 = new THREE.Vector3(eZ1[5], eZ1[6], eZ1[1]);
+      const theta1 = w1.length();
+      const u1 = theta1 < 1e-12 ? new THREE.Vector3(1, 0, 0) : w1.multiplyScalar(1 / theta1);
+
+      const eZ3 = Z3.elements;
+      const w3 = new THREE.Vector3(eZ3[5], eZ3[6], eZ3[1]);
+      const theta3 = w3.length();
+      const u3 = theta3 < 1e-12 ? new THREE.Vector3(1, 0, 0) : w3.multiplyScalar(1 / theta3);
+
       const eZ4 = Z4.elements;
-      const wx = eZ4[5], wy = eZ4[6], wz = eZ4[1];
-      const wLen = Math.sqrt(wx * wx + wy * wy + wz * wz);
-      const uBch = wLen < 1e-12
-        ? new THREE.Vector3(1, 0, 0)
-        : new THREE.Vector3(wx / wLen, wy / wLen, wz / wLen);
+      const w4 = new THREE.Vector3(eZ4[5], eZ4[6], eZ4[1]);
+      const theta4 = w4.length();
+      const u4 = theta4 < 1e-12 ? new THREE.Vector3(1, 0, 0) : w4.multiplyScalar(1 / theta4);
+
+      // "8차"는 실제론 BCH 급수 절단이 아니라, exp(A)exp(B)의 exact 로그를 축-각으로 변환한 값(수렴 극한).
+      const m4Exact = new THREE.Matrix4().setFromMatrix3(Rseq);
+      const qExact = new THREE.Quaternion().setFromRotationMatrix(m4Exact);
+      const sinHalf = Math.sqrt(qExact.x * qExact.x + qExact.y * qExact.y + qExact.z * qExact.z);
+      let theta8 = 2 * Math.atan2(sinHalf, qExact.w);
+      let u8;
+      if (sinHalf < 1e-12) {
+        u8 = new THREE.Vector3(1, 0, 0);
+        theta8 = 0;
+      } else {
+        u8 = new THREE.Vector3(qExact.x / sinHalf, qExact.y / sinHalf, qExact.z / sinHalf);
+        // principal value(각 <= pi)로 맞춤
+        if (theta8 > Math.PI) {
+          theta8 = 2 * Math.PI - theta8;
+          u8.multiplyScalar(-1);
+        }
+      }
+
+      const R8 = rodriguesExp(u8, theta8);
+
+      const d8 = subMatrix3(Rseq, R8);
 
       return {
         thetaA, thetaB, uA, uB,
         RA, RB, Rseq,
-        Z4, R4,
-        d1, d2, d3, d4,
-        uBch, thetaBch: wLen
+        Z1, Z3, Z4, R1, R3, R4, R8,
+        d1, d2, d3, d4, d8,
+        u1, theta1,
+        u3, theta3,
+        u4, theta4,
+        u8, theta8
       };
     }
 
-    function bchCompare(mode) {
+    function bchCompare(order) {
       const data = computeBchData();
       const {
-        thetaA, thetaB, uA, uB, RA, RB, Rseq, Z4, R4, d1, d2, d3, d4, uBch, thetaBch
+        thetaA, thetaB, uA, uB,
+        RA, RB, Rseq,
+        R1, R3,
+        d1, d2, d3,
+        u1, theta1,
+        u3, theta3
       } = data;
 
-      if (mode === "seq") {
-        bchOut.textContent =
-          `Rseq = exp(B)exp(A) (순차)\n` +
-          `${m3ToStringRowMajor(Rseq)}\n\n` +
-          `참고: ||·||_F = Frobenius norm = sqrt(sum(M_ij^2))`;
-        bchCopy.value =
-          `[순차 적용]\n` +
-          `1) R_A = exp(thetaA*[uA]_x)\n${m3ToStringRowMajor(RA)}\n\n` +
-          `2) R_B = exp(thetaB*[uB]_x)\n${m3ToStringRowMajor(RB)}\n\n` +
-          `적용 행렬: R_seq = R_B * R_A\n${m3ToStringRowMajor(Rseq)}\n\n` +
-          `[BCH(4차) 적용]\n` +
-          `축 u = (${fmtNum(uBch.x)}, ${fmtNum(uBch.y)}, ${fmtNum(uBch.z)})\n` +
-          `각 theta = ${fmtNum(thetaBch)} rad\n` +
-          `적용 행렬 R_BCH4 = exp(Z4)\n${m3ToStringRowMajor(R4)}`;
-        return;
+      const err1 = fmtNum(frobNorm(d1));
+      const err3 = fmtNum(frobNorm(d3));
+
+      let bchLabel = "";
+      let uSel, thetaSel, RSel;
+      if (order === 1) {
+        bchLabel = "BCH 1차 (Z1=A+B)";
+        uSel = u1; thetaSel = theta1; RSel = R1;
+      } else if (order === 3) {
+        bchLabel = "BCH 3차 (Z3까지)";
+        uSel = u3; thetaSel = theta3; RSel = R3;
       }
 
-      // mode === "bch4"
       bchCopy.value =
         `[순차 적용]\n` +
-        `A: thetaA=${fmtNum(thetaA)}, uA=(${fmtNum(uA.x)},${fmtNum(uA.y)},${fmtNum(uA.z)})\n` +
-        `B: thetaB=${fmtNum(thetaB)}, uB=(${fmtNum(uB.x)},${fmtNum(uB.y)},${fmtNum(uB.z)})\n` +
+        `R_A = exp(thetaA*[uA]_x)\n${m3ToStringRowMajor(RA)}\n\n` +
+        `R_B = exp(thetaB*[uB]_x)\n${m3ToStringRowMajor(RB)}\n\n` +
         `R_seq = R_B * R_A\n${m3ToStringRowMajor(Rseq)}\n\n` +
-        `[BCH(4차) 적용]\n` +
-        `Z4 = A+B + 1/2[A,B] + 1/12[A,[A,B]] + 1/12[B,[B,A]] - 1/24[B,[A,[A,B]]]\n` +
-        `u = (${fmtNum(uBch.x)}, ${fmtNum(uBch.y)}, ${fmtNum(uBch.z)})\n` +
-        `theta = ${fmtNum(thetaBch)} rad\n` +
-        `R_BCH4 = exp(Z4)\n${m3ToStringRowMajor(R4)}`;
+        `[BCH 합성 적용 (${bchLabel})]\n` +
+        `u = (${fmtNum(uSel.x)}, ${fmtNum(uSel.y)}, ${fmtNum(uSel.z)})\n` +
+        `theta = ${fmtNum(thetaSel)} rad\n\n` +
+        `R_BCH = exp(θ·[u]_x)\n${m3ToStringRowMajor(RSel)}`;
 
       bchOut.textContent =
-        `Rseq = exp(B)exp(A) (순차)\n${m3ToStringRowMajor(Rseq)}\n\n` +
-        `BCH 지수 근사별 오차 ||Rseq - Rk||_F\n` +
-        `k=1: exp(A+B)         -> ${fmtNum(frobNorm(d1))}\n` +
-        `k=2: +1/2[A,B]       -> ${fmtNum(frobNorm(d2))}\n` +
-        `k=3: +1/12 terms      -> ${fmtNum(frobNorm(d3))}\n` +
-        `k=4: BCH(4차) final  -> ${fmtNum(frobNorm(d4))}\n\n` +
-        `R_BCH(4차) = exp(Z4)\n${m3ToStringRowMajor(R4)}`;
+        `Rseq (참값) = exp(B)exp(A)\n${m3ToStringRowMajor(Rseq)}\n\n` +
+        `BCH 근사 오차: ||Rseq - Rk||_F (Frobenius norm)\n` +
+        `k=1  : ${err1}\n` +
+        `k=3  : ${err3}\n\n` +
+        `선택된 결과 (${bchLabel})\n${m3ToStringRowMajor(RSel)}`;
     }
 
-    function rebuildBchPaths() {
+    function rebuildBchPaths(order) {
       const data = computeBchData();
       const seqPts = [];
       const bchPts = [];
@@ -667,9 +707,13 @@
         const pSeq = basePos.clone().applyMatrix3(Mseq);
         seqPts.push(pSeq.x, pSeq.y, pSeq.z);
 
-        const Mbch = data.thetaBch < 1e-12
-          ? new THREE.Matrix3().identity()
-          : rodriguesExp(data.uBch, data.thetaBch * t);
+        let Mbch;
+        if (order === 1) {
+          Mbch = data.theta1 < 1e-12 ? new THREE.Matrix3().identity() : rodriguesExp(data.u1, data.theta1 * t);
+        } else {
+          // order === 3
+          Mbch = data.theta3 < 1e-12 ? new THREE.Matrix3().identity() : rodriguesExp(data.u3, data.theta3 * t);
+        }
         const pBch = basePos.clone().applyMatrix3(Mbch);
         bchPts.push(pBch.x, pBch.y, pBch.z);
       }
@@ -754,7 +798,10 @@
 
     let cmpAnimating = false;
     let cmpStartSec = 0;
-    let bchAnimating = null; // null | "seq" | "bch4"
+    // BCH 비교 애니메이션 상태: null | "seq"(순차 쪽) | "bch"(BCH 쪽)
+    let bchAnimating = null;
+    // BCH 근사 차수: 1 | 3
+    let bchOrder = 3;
     let bchStartSec = 0;
     const bchDurationSec = 3;
     cmpPlayBtn.addEventListener("click", () => {
@@ -790,8 +837,8 @@
 
     function refreshBchPreview() {
       try {
-        bchCompare("bch4");
-        rebuildBchPaths();
+        bchCompare(bchOrder);
+        rebuildBchPaths(bchOrder);
       } catch (err) {
         bchAnimating = null;
         alert(err.message || String(err));
@@ -806,8 +853,8 @@
 
     bchSeqBtn.addEventListener("click", () => {
       try {
-        bchCompare("seq");
-        rebuildBchPaths();
+        bchCompare(bchOrder);
+        rebuildBchPaths(bchOrder);
         bchT.value = "0";
         bchAnimating = "seq";
         bchStartSec = performance.now() * 0.001;
@@ -816,12 +863,26 @@
       }
     });
 
-    bchBch4Btn.addEventListener("click", () => {
+    bchBch1Btn.addEventListener("click", () => {
       try {
-        bchCompare("bch4");
-        rebuildBchPaths();
+        bchOrder = 1;
+        bchCompare(bchOrder);
+        rebuildBchPaths(bchOrder);
         bchT.value = "0";
-        bchAnimating = "bch4";
+        bchAnimating = "bch";
+        bchStartSec = performance.now() * 0.001;
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    bchBch3Btn.addEventListener("click", () => {
+      try {
+        bchOrder = 3;
+        bchCompare(bchOrder);
+        rebuildBchPaths(bchOrder);
+        bchT.value = "0";
+        bchAnimating = "bch";
         bchStartSec = performance.now() * 0.001;
       } catch (err) {
         alert(err.message || String(err));
@@ -843,11 +904,16 @@
           const RBpart = rodriguesExp(data.uB, data.thetaB * s);
           Mseq = new THREE.Matrix3().multiplyMatrices(RBpart, data.RA);
         }
-        const Mbch = data.thetaBch < 1e-12
-          ? new THREE.Matrix3().identity()
-          : rodriguesExp(data.uBch, data.thetaBch * t);
+        let Mbch;
+        if (bchOrder === 1) {
+          Mbch = data.theta1 < 1e-12 ? new THREE.Matrix3().identity() : rodriguesExp(data.u1, data.theta1 * t);
+        } else {
+          // bchOrder === 3
+          Mbch = data.theta3 < 1e-12 ? new THREE.Matrix3().identity() : rodriguesExp(data.u3, data.theta3 * t);
+        }
         applyMeshWithMatrix(bchSeqCube, Mseq);
         applyMeshWithMatrix(bch4Cube, Mbch);
+        applyCubeWithMatrix(Mbch);
       } catch (err) {
         alert(err.message || String(err));
       }
@@ -855,9 +921,10 @@
 
     rebuildComparePaths();
     setCompareState(0);
-    // 기본은 BCH(4차) 합성을 바로 보여주고 복사용 데이터도 채움.
-    bchCompare("bch4");
-    rebuildBchPaths();
+    // 기본은 BCH(3차) 합성을 바로 보여주고 복사용 데이터도 채움.
+    bchOrder = 3;
+    bchCompare(bchOrder);
+    rebuildBchPaths(bchOrder);
 
     function onResize() {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -896,10 +963,14 @@
             Mseq = new THREE.Matrix3().multiplyMatrices(RB_part, data.RA);
           }
 
-          // BCH(4차): 단일 합성축/각 0->theta 보간
-          const Mbch = data.thetaBch < 1e-12
-            ? new THREE.Matrix3().identity()
-            : rodriguesExp(data.uBch, data.thetaBch * t);
+          // BCH(선택 차수): 단일 합성축/각 0->theta 보간
+          let Mbch;
+          if (bchOrder === 1) {
+            Mbch = data.theta1 < 1e-12 ? new THREE.Matrix3().identity() : rodriguesExp(data.u1, data.theta1 * t);
+          } else {
+            // bchOrder === 3
+            Mbch = data.theta3 < 1e-12 ? new THREE.Matrix3().identity() : rodriguesExp(data.u3, data.theta3 * t);
+          }
 
           applyMeshWithMatrix(bchSeqCube, Mseq);
           applyMeshWithMatrix(bch4Cube, Mbch);

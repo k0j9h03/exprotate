@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>회전 행렬 — Three.js</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; }
+    #canvas-wrap { position: fixed; inset: 0; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #panel {
+      position: fixed; left: 12px; top: 12px; z-index: 1;
+      background: rgba(20, 22, 28, 0.92); color: #e8eaef;
+      padding: 12px 14px; border-radius: 10px; max-width: min(420px, 96vw);
+      max-height: calc(100vh - 24px);
+      overflow-y: auto;
+      font-size: 13px; line-height: 1.45;
+      box-shadow: 0 8px 32px rgba(0,0,0,.35);
+    }
+    #panel h1 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+    #panel p { margin: 0 0 8px; opacity: 0.85; }
+    .grid3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .grid3 input {
+      width: 100%; min-width: 0;
+      padding: 6px 8px; border: 1px solid #3a3f4d; border-radius: 6px;
+      background: #1a1d26; color: #e8eaef; font-family: ui-monospace, monospace;
+      font-size: 12px;
+    }
+    .grid3 input:focus { outline: 2px solid #5b8cff; border-color: transparent; }
+    .row-label { font-size: 11px; opacity: 0.65; margin-bottom: 4px; }
+    button {
+      padding: 8px 14px; border: none; border-radius: 8px;
+      background: #3d6df0; color: #fff; font-weight: 600; cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { background: #527dff; }
+    button:active { transform: scale(0.98); }
+    .hint { font-size: 11px; opacity: 0.7; margin-top: 8px; }
+    .sep { border: 0; border-top: 1px solid #3a3f4d; margin: 12px 0; }
+    h2.panel-sub { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+    .row2 { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .row2 input { width: 100%; padding: 6px 8px; border: 1px solid #3a3f4d; border-radius: 6px; background: #1a1d26; color: #e8eaef; font-family: ui-monospace, monospace; font-size: 12px; }
+    input[type="range"] { width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+  <aside id="panel">
+    <h1>3×3 회전 행렬 → 큐브</h1>
+    <p>큐브 위치는 <code>(1, 0, 0)</code> 고정. 아래 행렬은 <strong>행 우선</strong> (r<sub>ij</sub> = i행 j열).</p>
+    <div class="row-label">행렬 R</div>
+    <div class="grid3" id="matrix-inputs"></div>
+    <button type="button" id="apply">행렬 적용</button>
+    <div class="row2" style="grid-template-columns: 1fr 2fr; margin-top: 8px;">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="accumulate" />
+        <span>누적 모드(ON: 회전 누적)</span>
+      </label>
+      <button type="button" id="reset" style="padding: 8px 12px;">리셋</button>
+    </div>
+    <p class="hint">단위 행렬이면 회전 없음. 예: z축 90°는 R<sub>10</sub>=1, R<sub>01</sub>=−1 나머지 대각 1.</p>
+
+    <hr class="sep" />
+    <h2 class="panel-sub">행렬 지수 회전</h2>
+    <p class="hint" style="margin-top:0">SO(3): R = exp(θ·[û]×) = I + sin θ·[û]× + (1 − cos θ)·[û]×² (Rodrigues). 축 벡터 u는 길이 1로 맞춥니다.</p>
+    <div class="row2">
+      <span>θ (rad)</span>
+      <input type="text" id="exp-theta" value="1.5707963267948966" autocomplete="off" />
+    </div>
+    <div class="row-label">회전축 u = (x, y, z)</div>
+    <div class="grid3" id="axis-inputs"></div>
+    <button type="button" id="exp-apply">exp(θ·[û]×) → 행렬 반영</button>
+    <p class="hint">노란 화살표: 적용된 회전축 방향(원점 기준).</p>
+    <pre id="rod-debug" style="margin:0; margin-top:10px; padding:10px; background:#0f1117; border:1px solid #2b3140; border-radius:10px; color:#e8eaef; overflow:auto; max-height:220px; font-size:12px; line-height:1.35;"></pre>
+
+    <hr class="sep" />
+    <h2 class="panel-sub">경로 비교 인터랙션</h2>
+    <p class="hint" style="margin-top:0">빨강(오일러): ex,ey,ez를 0에서 목표각까지 선형 보간. 초록(지수식): 축 u와 θ를 0→목표θ로 보간.</p>
+    <div class="row2"><span>Euler 목표 ex,ey,ez (deg)</span><input type="text" id="cmp-euler-deg" value="90,90,0" /></div>
+    <div class="row-label">Exp 축 u = (x, y, z)</div>
+    <div class="grid3" id="cmp-exp-axis"></div>
+    <div class="row2"><span>Exp 목표 θ (rad)</span><input type="text" id="cmp-exp-theta" value="1.57" /></div>
+    <div class="row2" style="grid-template-columns: 1fr 1fr;">
+      <button type="button" id="cmp-play">재생</button>
+      <button type="button" id="cmp-stop">정지</button>
+    </div>
+    <div class="row2">
+      <span>t (0~1)</span>
+      <input type="range" id="cmp-t" min="0" max="1" step="0.001" value="0" />
+    </div>
+    <pre id="cmp-info" style="margin:0; margin-top:8px; padding:10px; background:#0f1117; border:1px solid #2b3140; border-radius:10px; color:#e8eaef; overflow:auto; max-height:260px; font-size:12px; line-height:1.35;"></pre>
+
+    <hr class="sep" />
+    <h2 class="panel-sub">BCH 숫자 비교</h2>
+    <p class="hint" style="margin-top:0">
+      BCH를 써서 <code>exp(A)exp(B)</code>를 하나의 <code>exp(·)</code>로 합성할 때 오차가 어떻게 줄어드는지 확인합니다.
+      <br />또한 <code>||M||<sub>F</sub></code>는 Frobenius norm(프로베니우스 노름)으로, <code>sqrt(Σ<sub>i,j</sub> M<sub>ij</sub>²)</code>입니다.
+    </p>
+    <div class="row2"><span>θA (rad)</span><input type="text" id="bch-theta-a" value="0.1" /></div>
+    <div class="row-label">uA = (x, y, z)</div>
+    <div class="grid3" id="bch-axis-a"></div>
+    <div class="row2"><span>θB (rad)</span><input type="text" id="bch-theta-b" value="0.1" /></div>
+    <div class="row-label">uB = (x, y, z)</div>
+    <div class="grid3" id="bch-axis-b"></div>
+    <div class="row2" style="grid-template-columns: 1fr 1fr;">
+      <button type="button" id="bch-seq">순차 회전 애니메이션</button>
+      <button type="button" id="bch-bch4">BCH(4차) 애니메이션</button>
+    </div>
+    <div class="row2">
+      <span>BCH 진행도</span>
+      <input type="range" id="bch-t" min="0" max="1" step="0.001" value="0" />
+    </div>
+    <div class="row-label" style="margin-top:10px;">합성 복사용 데이터(축+각)</div>
+    <textarea id="bch-copy" rows="5" style="width:100%; padding:10px; background:#0f1117; border:1px solid #2b3140; border-radius:10px; color:#e8eaef; resize:none; font-family: ui-monospace, monospace; font-size:12px; line-height:1.35;"></textarea>
+    <pre id="bch-out" style="margin:0; margin-top:8px; padding:10px; background:#0f1117; border:1px solid #2b3140; border-radius:10px; color:#e8eaef; overflow:auto; max-height:180px; font-size:12px; line-height:1.35;"></pre>
+  </aside>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    const wrap = document.getElementById("canvas-wrap");
+    const grid = document.getElementById("matrix-inputs");
+    const axisGrid = document.getElementById("axis-inputs");
+    const accumulateToggle = document.getElementById("accumulate");
+    const resetBtn = document.getElementById("reset");
+    const rodDebug = document.getElementById("rod-debug");
+    const cmpPlayBtn = document.getElementById("cmp-play");
+    const cmpStopBtn = document.getElementById("cmp-stop");
+    const cmpT = document.getElementById("cmp-t");
+    const cmpInfo = document.getElementById("cmp-info");
+    const cmpEulerDegInput = document.getElementById("cmp-euler-deg");
+    const cmpExpThetaInput = document.getElementById("cmp-exp-theta");
+    const cmpExpAxisGrid = document.getElementById("cmp-exp-axis");
+    const bchAxisAGrid = document.getElementById("bch-axis-a");
+    const bchAxisBGrid = document.getElementById("bch-axis-b");
+    const bchSeqBtn = document.getElementById("bch-seq");
+    const bchBch4Btn = document.getElementById("bch-bch4");
+    const bchT = document.getElementById("bch-t");
+    const bchCopy = document.getElementById("bch-copy");
+    const bchOut = document.getElementById("bch-out");
+
+    const inputs = [];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.inputMode = "decimal";
+        inp.autocomplete = "off";
+        inp.dataset.row = String(i);
+        inp.dataset.col = String(j);
+        const isDiag = i === j;
+        inp.value = isDiag ? "1" : "0";
+        inputs.push(inp);
+        grid.appendChild(inp);
+      }
+    }
+
+    const axisVals = [
+      { v: "0", l: "x" },
+      { v: "0", l: "y" },
+      { v: "1", l: "z" },
+    ];
+    axisVals.forEach(({ v, l }) => {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.id = `axis-${l}`;
+      inp.placeholder = l;
+      inp.value = v;
+      inp.autocomplete = "off";
+      axisGrid.appendChild(inp);
+    });
+
+    function createAxisInputs(container, init) {
+      const ids = ["x", "y", "z"];
+      ids.forEach((id, idx) => {
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.id = `${container.id}-${id}`;
+        inp.value = String(init[idx]);
+        inp.autocomplete = "off";
+        container.appendChild(inp);
+      });
+    }
+    createAxisInputs(bchAxisAGrid, [1, 0, 0]);
+    createAxisInputs(bchAxisBGrid, [0, 1, 0]);
+    createAxisInputs(cmpExpAxisGrid, [1, 1, 0]);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x12141a);
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(2.8, 2.2, 3.5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    wrap.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0.5, 0, 0);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.95);
+    dir.position.set(3, 5, 4);
+    scene.add(dir);
+
+    scene.add(new THREE.GridHelper(6, 12, 0x334155, 0x1e293b));
+    const axes = new THREE.AxesHelper(1.5);
+    scene.add(axes);
+
+    const axisArrow = new THREE.ArrowHelper(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 0, 0),
+      1.25,
+      0xffcc00,
+      0.12,
+      0.08
+    );
+    scene.add(axisArrow);
+    const baseAxisDir = new THREE.Vector3(0, 0, 1);
+
+    const geom = new THREE.BoxGeometry(0.45, 0.45, 0.45);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x5b8cff, metalness: 0.15, roughness: 0.45 });
+    const cube = new THREE.Mesh(geom, mat);
+    cube.position.set(1, 0, 0);
+    // 이 도구에서 큐브는 "점 (1,0,0)"을 회전시킨 결과 위치로 쓰입니다.
+    const basePos = cube.position.clone();
+    // 누적 모드에서 총 회전 R_total을 저장합니다.
+    // 누적 모드에서는 currentM3를 업데이트하고, 매번 cube은 basePos에 R_total을 다시 적용합니다.
+    const currentM3 = new THREE.Matrix3().identity();
+    const tmpM3 = new THREE.Matrix3();
+    scene.add(cube);
+
+    const eulerCube = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({ color: 0xff4d4f, transparent: true, opacity: 0.85 })
+    );
+    const expCube = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({ color: 0x22c55e, transparent: true, opacity: 0.85 })
+    );
+    eulerCube.position.copy(basePos);
+    expCube.position.copy(basePos);
+    scene.add(eulerCube);
+    scene.add(expCube);
+
+    const bchSeqCube = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.9 })
+    );
+    const bch4Cube = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({ color: 0x8b5cf6, transparent: true, opacity: 0.9 })
+    );
+    bchSeqCube.position.copy(basePos);
+    bch4Cube.position.copy(basePos);
+    scene.add(bchSeqCube);
+    scene.add(bch4Cube);
+
+    function makePathLine(color) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
+      const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+      scene.add(l);
+      return l;
+    }
+    const eulerPathLine = makePathLine(0xff4d4f);
+    const expPathLine = makePathLine(0x22c55e);
+    const bchSeqPathLine = makePathLine(0xf59e0b);
+    const bch4PathLine = makePathLine(0x8b5cf6);
+
+    resetBtn.addEventListener("click", () => {
+      bchAnimating = null;
+      cube.position.copy(basePos);
+      cube.quaternion.identity();
+      bchSeqCube.position.copy(basePos);
+      bchSeqCube.quaternion.identity();
+      bch4Cube.position.copy(basePos);
+      bch4Cube.quaternion.identity();
+      bchT.value = "0";
+      currentM3.identity();
+      axisArrow.setDirection(baseAxisDir);
+    });
+
+    const rotMat4 = new THREE.Matrix4();
+
+    function parseMatrix() {
+      const vals = [];
+      for (let k = 0; k < 9; k++) {
+        const v = parseFloat(inputs[k].value.trim().replace(",", "."));
+        if (Number.isNaN(v)) throw new Error("숫자가 아닌 칸이 있습니다.");
+        vals.push(v);
+      }
+      const m = new THREE.Matrix3();
+      m.set(
+        vals[0], vals[1], vals[2],
+        vals[3], vals[4], vals[5],
+        vals[6], vals[7], vals[8]
+      );
+      return m;
+    }
+
+    function applyRotationMatrix() {
+      const m3 = parseMatrix();
+      if (accumulateToggle.checked) {
+        // 누적: R_total <- m3 * R_total (점(1,0,0)에 대해 동일한 누적 경로를 보이기 위함)
+        tmpM3.multiplyMatrices(m3, currentM3);
+        currentM3.copy(tmpM3);
+      } else {
+        // 절대: R_total <- m3
+        currentM3.copy(m3);
+      }
+
+      rotMat4.setFromMatrix3(currentM3);
+      cube.quaternion.setFromRotationMatrix(rotMat4);
+      cube.position.copy(basePos.clone().applyMatrix3(currentM3));
+    }
+
+    function applyCubeWithMatrix(m3) {
+      rotMat4.setFromMatrix3(m3);
+      cube.quaternion.setFromRotationMatrix(rotMat4);
+      cube.position.copy(basePos.clone().applyMatrix3(m3));
+    }
+
+    function applyMeshWithMatrix(mesh, m3) {
+      rotMat4.setFromMatrix3(m3);
+      mesh.quaternion.setFromRotationMatrix(rotMat4);
+      mesh.position.copy(basePos.clone().applyMatrix3(m3));
+    }
+
+    function parseFloatStrict(s) {
+      const v = parseFloat(String(s).trim().replace(",", "."));
+      if (Number.isNaN(v)) throw new Error("숫자가 아닌 입력이 있습니다.");
+      return v;
+    }
+
+    /** 벡터 v에 대한 교차 행렬 [v]_× (3×3) */
+    function hat(v) {
+      return new THREE.Matrix3().set(
+        0, -v.z, v.y,
+        v.z, 0, -v.x,
+        -v.y, v.x, 0
+      );
+    }
+
+    function addMatrix3(a, b) {
+      const out = new THREE.Matrix3();
+      const oe = out.elements;
+      const ae = a.elements;
+      const be = b.elements;
+      for (let i = 0; i < 9; i++) oe[i] = ae[i] + be[i];
+      return out;
+    }
+
+    function fmtNum(x) {
+      if (!Number.isFinite(x)) return String(x);
+      const t = Math.round(x * 1e8) / 1e8;
+      return String(t);
+    }
+
+    function m3ToRowMajor(m3) {
+      const e = m3.elements;
+      return [
+        [e[0], e[3], e[6]],
+        [e[1], e[4], e[7]],
+        [e[2], e[5], e[8]],
+      ];
+    }
+
+    function m3ToStringRowMajor(m3) {
+      const rows = m3ToRowMajor(m3);
+      return rows
+        .map((r) => `[${r.map(fmtNum).join(", ")}]`)
+        .join("\n");
+    }
+
+    function eulerAxisRotationMatrices(ex, ey, ez) {
+      const cx = Math.cos(ex), sx = Math.sin(ex);
+      const cy = Math.cos(ey), sy = Math.sin(ey);
+      const cz = Math.cos(ez), sz = Math.sin(ez);
+
+      // R_x(ex)
+      const Rx = new THREE.Matrix3().set(
+        1, 0, 0,
+        0, cx, -sx,
+        0, sx, cx
+      );
+      // R_y(ey)
+      const Ry = new THREE.Matrix3().set(
+        cy, 0, sy,
+        0, 1, 0,
+        -sy, 0, cy
+      );
+      // R_z(ez)
+      const Rz = new THREE.Matrix3().set(
+        cz, -sz, 0,
+        sz, cz, 0,
+        0, 0, 1
+      );
+      return { Rx, Ry, Rz };
+    }
+
+    function subMatrix3(a, b) {
+      const out = new THREE.Matrix3();
+      const oe = out.elements;
+      const ae = a.elements;
+      const be = b.elements;
+      for (let i = 0; i < 9; i++) oe[i] = ae[i] - be[i];
+      return out;
+    }
+
+    function frobNorm(m3) {
+      const e = m3.elements;
+      let s = 0;
+      for (let i = 0; i < 9; i++) s += e[i] * e[i];
+      return Math.sqrt(s);
+    }
+
+    /** R = exp(θ [û]_×), ‖û‖=1 — Rodrigues */
+    function rodriguesExp(uUnit, theta) {
+      const K = hat(uUnit);
+      const K2 = new THREE.Matrix3().multiplyMatrices(K, K);
+      const I = new THREE.Matrix3().identity();
+      const tmp = new THREE.Matrix3();
+      tmp.copy(K).multiplyScalar(Math.sin(theta));
+      const IplusSinK = addMatrix3(I, tmp);
+      tmp.copy(K2).multiplyScalar(1 - Math.cos(theta));
+      return addMatrix3(IplusSinK, tmp);
+    }
+
+    function parseEulerDegTriple() {
+      const raw = String(cmpEulerDegInput.value).split(",").map((s) => s.trim());
+      if (raw.length !== 3) throw new Error("Euler 목표각은 'ex,ey,ez' 형식(예: 90,90,0)으로 입력하세요.");
+      const d = raw.map((s) => parseFloatStrict(s));
+      return d.map((v) => (v * Math.PI) / 180);
+    }
+
+    function parseCmpExpAxisUnit() {
+      return parseAxisByPrefix("cmp-exp-axis");
+    }
+
+    function parseCmpExpTheta() {
+      return parseFloatStrict(cmpExpThetaInput.value);
+    }
+
+    function setCompareState(t) {
+      const tt = Math.max(0, Math.min(1, t));
+      cmpT.value = String(tt);
+
+      const [exMax, eyMax, ezMax] = parseEulerDegTriple();
+      const ex = tt * exMax;
+      const ey = tt * eyMax;
+      const ez = tt * ezMax;
+      const qEuler = new THREE.Quaternion().setFromEuler(new THREE.Euler(ex, ey, ez, "XYZ"));
+      eulerCube.quaternion.copy(qEuler);
+      eulerCube.position.copy(basePos.clone().applyQuaternion(qEuler));
+
+      const axisExp = parseCmpExpAxisUnit();
+      const theta = tt * parseCmpExpTheta();
+      const qExp = new THREE.Quaternion().setFromAxisAngle(axisExp, theta);
+      expCube.quaternion.copy(qExp);
+      expCube.position.copy(basePos.clone().applyQuaternion(qExp));
+
+      const { Rx, Ry, Rz } = eulerAxisRotationMatrices(ex, ey, ez);
+      const m4E = new THREE.Matrix4().makeRotationFromQuaternion(qEuler);
+      const m4X = new THREE.Matrix4().makeRotationFromQuaternion(qExp);
+      const mE = new THREE.Matrix3().setFromMatrix4(m4E);
+      const mX = new THREE.Matrix3().setFromMatrix4(m4X);
+
+      cmpInfo.textContent =
+        `t = ${fmtNum(tt)}\n` +
+        `Euler angles (XYZ) [rad] = (${fmtNum(ex)}, ${fmtNum(ey)}, ${fmtNum(ez)})\n\n` +
+        `R_x(ex)\n${m3ToStringRowMajor(Rx)}\n\n` +
+        `R_y(ey)\n${m3ToStringRowMajor(Ry)}\n\n` +
+        `R_z(ez)\n${m3ToStringRowMajor(Rz)}\n\n` +
+        `Euler 최종 R(t) (3x3)\n${m3ToStringRowMajor(mE)}\n\n` +
+        `Exp axis u = (${fmtNum(axisExp.x)}, ${fmtNum(axisExp.y)}, ${fmtNum(axisExp.z)}), theta=${fmtNum(theta)} rad\n` +
+        `Exp 최종 R(t) (3x3)\n${m3ToStringRowMajor(mX)}\n\n` +
+        `pos: Euler=(${fmtNum(eulerCube.position.x)}, ${fmtNum(eulerCube.position.y)}, ${fmtNum(eulerCube.position.z)})\n` +
+        `      Exp  =(${fmtNum(expCube.position.x)}, ${fmtNum(expCube.position.y)}, ${fmtNum(expCube.position.z)})`;
+    }
+
+    function rebuildComparePaths() {
+      const [exMax, eyMax, ezMax] = parseEulerDegTriple();
+      const axisExp = parseCmpExpAxisUnit();
+      const thetaMax = parseCmpExpTheta();
+      const ePts = [];
+      const xPts = [];
+      for (let i = 0; i <= 120; i++) {
+        const t = i / 120;
+        const ex = t * exMax;
+        const ey = t * eyMax;
+        const ez = t * ezMax;
+        const qE = new THREE.Quaternion().setFromEuler(new THREE.Euler(ex, ey, ez, "XYZ"));
+        const pE = basePos.clone().applyQuaternion(qE);
+        ePts.push(pE.x, pE.y, pE.z);
+
+        const qX = new THREE.Quaternion().setFromAxisAngle(axisExp, t * thetaMax);
+        const pX = basePos.clone().applyQuaternion(qX);
+        xPts.push(pX.x, pX.y, pX.z);
+      }
+      eulerPathLine.geometry.setAttribute("position", new THREE.Float32BufferAttribute(ePts, 3));
+      expPathLine.geometry.setAttribute("position", new THREE.Float32BufferAttribute(xPts, 3));
+    }
+
+    function parseAxisByPrefix(prefix) {
+      const x = parseFloatStrict(document.getElementById(`${prefix}-x`).value);
+      const y = parseFloatStrict(document.getElementById(`${prefix}-y`).value);
+      const z = parseFloatStrict(document.getElementById(`${prefix}-z`).value);
+      const v = new THREE.Vector3(x, y, z);
+      const n = v.length();
+      if (n < 1e-10) throw new Error(`축 벡터(${prefix}) 길이가 너무 작습니다.`);
+      return v.multiplyScalar(1 / n);
+    }
+
+    function computeBchData() {
+      const thetaA = parseFloatStrict(document.getElementById("bch-theta-a").value);
+      const thetaB = parseFloatStrict(document.getElementById("bch-theta-b").value);
+      const uA = parseAxisByPrefix("bch-axis-a");
+      const uB = parseAxisByPrefix("bch-axis-b");
+
+      const A = hat(uA).multiplyScalar(thetaA);
+      const B = hat(uB).multiplyScalar(thetaB);
+
+      // 순차 회전: exp(A) 후 exp(B) => Rseq = exp(B)exp(A)
+      const RA = rodriguesExp(uA, thetaA);
+      const RB = rodriguesExp(uB, thetaB);
+      const Rseq = new THREE.Matrix3().multiplyMatrices(RB, RA);
+
+      function commMat(X, Y) {
+        const XY = new THREE.Matrix3().multiplyMatrices(X, Y);
+        const YX = new THREE.Matrix3().multiplyMatrices(Y, X);
+        return subMatrix3(XY, YX);
+      }
+
+      function scaleMat(m, s) {
+        return new THREE.Matrix3().copy(m).multiplyScalar(s);
+      }
+
+      // so(3) skew matrix Z = [w]_x 에서 w, theta, u_unit 추출 -> exp(Z)
+      function expFromSkew(Z) {
+        const e = Z.elements;
+        const wx = e[5]; // Z[2,1]
+        const wy = e[6]; // Z[0,2]
+        const wz = e[1]; // Z[1,0]
+        const w = new THREE.Vector3(wx, wy, wz);
+        const th = w.length();
+        if (th < 1e-12) return new THREE.Matrix3().identity();
+        const u = w.clone().multiplyScalar(1 / th);
+        return rodriguesExp(u, th);
+      }
+
+      // BCH(4차) 지수: Z = A + B + 1/2[A,B] + 1/12[A,[A,B]] + 1/12[B,[B,A]] - 1/24[B,[A,[A,B]]]
+      const c1 = commMat(A, B); // [A,B]
+      const c2 = commMat(A, c1); // [A,[A,B]]
+      const c3 = commMat(B, commMat(B, A)); // [B,[B,A]]
+      const c4 = commMat(B, c2); // [B,[A,[A,B]]]
+
+      const Z1 = addMatrix3(A, B); // A+B
+      const Z2 = addMatrix3(Z1, scaleMat(c1, 1 / 2));
+      const Z3 = addMatrix3(addMatrix3(Z2, scaleMat(c2, 1 / 12)), scaleMat(c3, 1 / 12));
+      const Z4 = addMatrix3(Z3, scaleMat(c4, -1 / 24));
+
+      const R1 = expFromSkew(Z1);
+      const R2 = expFromSkew(Z2);
+      const R3 = expFromSkew(Z3);
+      const R4 = expFromSkew(Z4);
+
+      const d1 = subMatrix3(Rseq, R1);
+      const d2 = subMatrix3(Rseq, R2);
+      const d3 = subMatrix3(Rseq, R3);
+      const d4 = subMatrix3(Rseq, R4);
+
+      const eZ4 = Z4.elements;
+      const wx = eZ4[5], wy = eZ4[6], wz = eZ4[1];
+      const wLen = Math.sqrt(wx * wx + wy * wy + wz * wz);
+      const uBch = wLen < 1e-12
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(wx / wLen, wy / wLen, wz / wLen);
+
+      return {
+        thetaA, thetaB, uA, uB,
+        RA, RB, Rseq,
+        Z4, R4,
+        d1, d2, d3, d4,
+        uBch, thetaBch: wLen
+      };
+    }
+
+    function bchCompare(mode) {
+      const data = computeBchData();
+      const {
+        thetaA, thetaB, uA, uB, RA, RB, Rseq, Z4, R4, d1, d2, d3, d4, uBch, thetaBch
+      } = data;
+
+      if (mode === "seq") {
+        bchOut.textContent =
+          `Rseq = exp(B)exp(A) (순차)\n` +
+          `${m3ToStringRowMajor(Rseq)}\n\n` +
+          `참고: ||·||_F = Frobenius norm = sqrt(sum(M_ij^2))`;
+        bchCopy.value =
+          `[순차 적용]\n` +
+          `1) R_A = exp(thetaA*[uA]_x)\n${m3ToStringRowMajor(RA)}\n\n` +
+          `2) R_B = exp(thetaB*[uB]_x)\n${m3ToStringRowMajor(RB)}\n\n` +
+          `적용 행렬: R_seq = R_B * R_A\n${m3ToStringRowMajor(Rseq)}\n\n` +
+          `[BCH(4차) 적용]\n` +
+          `축 u = (${fmtNum(uBch.x)}, ${fmtNum(uBch.y)}, ${fmtNum(uBch.z)})\n` +
+          `각 theta = ${fmtNum(thetaBch)} rad\n` +
+          `적용 행렬 R_BCH4 = exp(Z4)\n${m3ToStringRowMajor(R4)}`;
+        return;
+      }
+
+      // mode === "bch4"
+      bchCopy.value =
+        `[순차 적용]\n` +
+        `A: thetaA=${fmtNum(thetaA)}, uA=(${fmtNum(uA.x)},${fmtNum(uA.y)},${fmtNum(uA.z)})\n` +
+        `B: thetaB=${fmtNum(thetaB)}, uB=(${fmtNum(uB.x)},${fmtNum(uB.y)},${fmtNum(uB.z)})\n` +
+        `R_seq = R_B * R_A\n${m3ToStringRowMajor(Rseq)}\n\n` +
+        `[BCH(4차) 적용]\n` +
+        `Z4 = A+B + 1/2[A,B] + 1/12[A,[A,B]] + 1/12[B,[B,A]] - 1/24[B,[A,[A,B]]]\n` +
+        `u = (${fmtNum(uBch.x)}, ${fmtNum(uBch.y)}, ${fmtNum(uBch.z)})\n` +
+        `theta = ${fmtNum(thetaBch)} rad\n` +
+        `R_BCH4 = exp(Z4)\n${m3ToStringRowMajor(R4)}`;
+
+      bchOut.textContent =
+        `Rseq = exp(B)exp(A) (순차)\n${m3ToStringRowMajor(Rseq)}\n\n` +
+        `BCH 지수 근사별 오차 ||Rseq - Rk||_F\n` +
+        `k=1: exp(A+B)         -> ${fmtNum(frobNorm(d1))}\n` +
+        `k=2: +1/2[A,B]       -> ${fmtNum(frobNorm(d2))}\n` +
+        `k=3: +1/12 terms      -> ${fmtNum(frobNorm(d3))}\n` +
+        `k=4: BCH(4차) final  -> ${fmtNum(frobNorm(d4))}\n\n` +
+        `R_BCH(4차) = exp(Z4)\n${m3ToStringRowMajor(R4)}`;
+    }
+
+    function rebuildBchPaths() {
+      const data = computeBchData();
+      const seqPts = [];
+      const bchPts = [];
+      for (let i = 0; i <= 120; i++) {
+        const t = i / 120;
+
+        let Mseq;
+        if (t <= 0.5) {
+          const s = t / 0.5;
+          Mseq = rodriguesExp(data.uA, data.thetaA * s);
+        } else {
+          const s = (t - 0.5) / 0.5;
+          const RBpart = rodriguesExp(data.uB, data.thetaB * s);
+          Mseq = new THREE.Matrix3().multiplyMatrices(RBpart, data.RA);
+        }
+        const pSeq = basePos.clone().applyMatrix3(Mseq);
+        seqPts.push(pSeq.x, pSeq.y, pSeq.z);
+
+        const Mbch = data.thetaBch < 1e-12
+          ? new THREE.Matrix3().identity()
+          : rodriguesExp(data.uBch, data.thetaBch * t);
+        const pBch = basePos.clone().applyMatrix3(Mbch);
+        bchPts.push(pBch.x, pBch.y, pBch.z);
+      }
+      bchSeqPathLine.geometry.setAttribute("position", new THREE.Float32BufferAttribute(seqPts, 3));
+      bch4PathLine.geometry.setAttribute("position", new THREE.Float32BufferAttribute(bchPts, 3));
+    }
+
+    /** Matrix3 → 입력 칸 (행 우선 표시) */
+    function setMatrixInputsFromM3(m3) {
+      const e = m3.elements;
+      const fmt = (x) => {
+        const t = Math.round(x * 1e8) / 1e8;
+        return String(t);
+      };
+      inputs[0].value = fmt(e[0]); inputs[1].value = fmt(e[3]); inputs[2].value = fmt(e[6]);
+      inputs[3].value = fmt(e[1]); inputs[4].value = fmt(e[4]); inputs[5].value = fmt(e[7]);
+      inputs[6].value = fmt(e[2]); inputs[7].value = fmt(e[5]); inputs[8].value = fmt(e[8]);
+    }
+
+    function applyMatrixExponential() {
+      const theta = parseFloatStrict(document.getElementById("exp-theta").value);
+      const ax = parseFloatStrict(document.getElementById("axis-x").value);
+      const ay = parseFloatStrict(document.getElementById("axis-y").value);
+      const az = parseFloatStrict(document.getElementById("axis-z").value);
+      const u = new THREE.Vector3(ax, ay, az);
+      const len = u.length();
+      if (len < 1e-10) throw new Error("회전축 벡터 길이가 너무 작습니다.");
+      u.multiplyScalar(1 / len);
+
+      const sinT = Math.sin(theta);
+      const cosT = Math.cos(theta);
+
+      // 디버그용: Rodrigues에 들어가는 K, K^2, 그리고 최종 R을 분해해서 보여줌.
+      const K = hat(u);
+      const K2 = new THREE.Matrix3().multiplyMatrices(K, K);
+      const I = new THREE.Matrix3().identity();
+
+      const R = rodriguesExp(u, theta);
+      setMatrixInputsFromM3(R);
+
+      if (accumulateToggle.checked) {
+        // 누적: R_total <- R * R_total
+        tmpM3.multiplyMatrices(R, currentM3);
+        currentM3.copy(tmpM3);
+      } else {
+        // 절대: R_total <- R
+        currentM3.copy(R);
+      }
+
+      rotMat4.setFromMatrix3(currentM3);
+      cube.quaternion.setFromRotationMatrix(rotMat4);
+      cube.position.copy(basePos.clone().applyMatrix3(currentM3));
+
+      axisArrow.setDirection(u);
+
+      rodDebug.textContent =
+        `θ = ${fmtNum(theta)}\n` +
+        `u_unit = (${fmtNum(u.x)}, ${fmtNum(u.y)}, ${fmtNum(u.z)})\n` +
+        `sinθ = ${fmtNum(sinT)}, cosθ = ${fmtNum(cosT)}\n\n` +
+        `K = [û]_× (교차행렬)\n${m3ToStringRowMajor(K)}\n\n` +
+        `K^2\n${m3ToStringRowMajor(K2)}\n\n` +
+        `Rodrigues: R = I + sinθ*K + (1−cosθ)*K^2\n` +
+        `I\n${m3ToStringRowMajor(I)}\n\n` +
+        `R(=exp(θ*[û]_×))\n${m3ToStringRowMajor(R)}\n`;
+    }
+
+    document.getElementById("apply").addEventListener("click", () => {
+      try {
+        applyRotationMatrix();
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    document.getElementById("exp-apply").addEventListener("click", () => {
+      try {
+        applyMatrixExponential();
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    let cmpAnimating = false;
+    let cmpStartSec = 0;
+    let bchAnimating = null; // null | "seq" | "bch4"
+    let bchStartSec = 0;
+    const bchDurationSec = 3;
+    cmpPlayBtn.addEventListener("click", () => {
+      cmpAnimating = true;
+      cmpStartSec = performance.now() * 0.001;
+    });
+    cmpStopBtn.addEventListener("click", () => {
+      cmpAnimating = false;
+    });
+    cmpT.addEventListener("input", () => {
+      cmpAnimating = false;
+      try {
+        setCompareState(parseFloat(cmpT.value));
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    function refreshComparePreview() {
+      try {
+        rebuildComparePaths();
+        setCompareState(parseFloat(cmpT.value));
+      } catch (err) {
+        cmpAnimating = false;
+        alert(err.message || String(err));
+      }
+    }
+    cmpEulerDegInput.addEventListener("change", refreshComparePreview);
+    cmpExpThetaInput.addEventListener("change", refreshComparePreview);
+    ["x", "y", "z"].forEach((k) => {
+      document.getElementById(`cmp-exp-axis-${k}`).addEventListener("change", refreshComparePreview);
+    });
+
+    function refreshBchPreview() {
+      try {
+        bchCompare("bch4");
+        rebuildBchPaths();
+      } catch (err) {
+        bchAnimating = null;
+        alert(err.message || String(err));
+      }
+    }
+    document.getElementById("bch-theta-a").addEventListener("change", refreshBchPreview);
+    document.getElementById("bch-theta-b").addEventListener("change", refreshBchPreview);
+    ["x", "y", "z"].forEach((k) => {
+      document.getElementById(`bch-axis-a-${k}`).addEventListener("change", refreshBchPreview);
+      document.getElementById(`bch-axis-b-${k}`).addEventListener("change", refreshBchPreview);
+    });
+
+    bchSeqBtn.addEventListener("click", () => {
+      try {
+        bchCompare("seq");
+        rebuildBchPaths();
+        bchT.value = "0";
+        bchAnimating = "seq";
+        bchStartSec = performance.now() * 0.001;
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    bchBch4Btn.addEventListener("click", () => {
+      try {
+        bchCompare("bch4");
+        rebuildBchPaths();
+        bchT.value = "0";
+        bchAnimating = "bch4";
+        bchStartSec = performance.now() * 0.001;
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    bchT.addEventListener("input", () => {
+      try {
+        const t = parseFloat(bchT.value);
+        const data = computeBchData();
+        bchAnimating = null;
+
+        let Mseq;
+        if (t <= 0.5) {
+          const s = t / 0.5;
+          Mseq = rodriguesExp(data.uA, data.thetaA * s);
+        } else {
+          const s = (t - 0.5) / 0.5;
+          const RBpart = rodriguesExp(data.uB, data.thetaB * s);
+          Mseq = new THREE.Matrix3().multiplyMatrices(RBpart, data.RA);
+        }
+        const Mbch = data.thetaBch < 1e-12
+          ? new THREE.Matrix3().identity()
+          : rodriguesExp(data.uBch, data.thetaBch * t);
+        applyMeshWithMatrix(bchSeqCube, Mseq);
+        applyMeshWithMatrix(bch4Cube, Mbch);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    rebuildComparePaths();
+    setCompareState(0);
+    // 기본은 BCH(4차) 합성을 바로 보여주고 복사용 데이터도 채움.
+    bchCompare("bch4");
+    rebuildBchPaths();
+
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener("resize", onResize);
+
+    function tick() {
+      requestAnimationFrame(tick);
+      if (cmpAnimating) {
+        try {
+          const elapsed = performance.now() * 0.001 - cmpStartSec;
+          const t = (elapsed % 3) / 3;
+          setCompareState(t);
+        } catch (err) {
+          cmpAnimating = false;
+          alert(err.message || String(err));
+        }
+      }
+      if (bchAnimating) {
+        try {
+          const data = computeBchData();
+          const elapsed = performance.now() * 0.001 - bchStartSec;
+          const t = Math.max(0, Math.min(1, (elapsed % bchDurationSec) / bchDurationSec));
+          bchT.value = String(t);
+
+          // 순차: 전반부(t<=0.5)는 A만, 후반부는 A 완료 후 B 추가 적용
+          let Mseq;
+          if (t <= 0.5) {
+            const s = t / 0.5;
+            Mseq = rodriguesExp(data.uA, data.thetaA * s);
+          } else {
+            const s = (t - 0.5) / 0.5;
+            const RB_part = rodriguesExp(data.uB, data.thetaB * s);
+            Mseq = new THREE.Matrix3().multiplyMatrices(RB_part, data.RA);
+          }
+
+          // BCH(4차): 단일 합성축/각 0->theta 보간
+          const Mbch = data.thetaBch < 1e-12
+            ? new THREE.Matrix3().identity()
+            : rodriguesExp(data.uBch, data.thetaBch * t);
+
+          applyMeshWithMatrix(bchSeqCube, Mseq);
+          applyMeshWithMatrix(bch4Cube, Mbch);
+          applyCubeWithMatrix(bchAnimating === "seq" ? Mseq : Mbch);
+        } catch (err) {
+          bchAnimating = null;
+          alert(err.message || String(err));
+        }
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    tick();
+  </script>
+</body>
+</html>
